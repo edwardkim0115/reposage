@@ -1,0 +1,13 @@
+{
+  "name": "reposage",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "web:dev": "npm run dev --workspace @reposage/web",
+    "web:build": "npm run build --workspace @reposage/web",
+    "web:lint": "npm run lint --workspace @reposage/web"
+  }
+}
+

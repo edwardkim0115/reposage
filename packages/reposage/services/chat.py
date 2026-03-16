@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from reposage.enums import MessageRole, ProjectStatus
+from reposage.models import ChatMessage, ChatSession, Project
+from reposage.services.llm import answer_question, citation_payload
+from reposage.services.retrieval import retrieve_relevant_chunks
+
+
+def create_chat_session(session: Session, project_id: str, title: str | None = None) -> ChatSession:
+    chat_session = ChatSession(project_id=project_id, title=title)
+    session.add(chat_session)
+    session.commit()
+    session.refresh(chat_session)
+    return chat_session
+
+
+def list_messages(session: Session, chat_session_id: str) -> list[ChatMessage]:
+    statement = (
+        select(ChatMessage)
+        .where(ChatMessage.chat_session_id == chat_session_id)
+        .order_by(ChatMessage.created_at.asc())
+    )
+    return list(session.scalars(statement).all())
+
+
+def post_chat_message(session: Session, chat_session_id: str, content: str) -> tuple[ChatSession, ChatMessage, ChatMessage, list[str]]:
+    chat_session = session.get(ChatSession, chat_session_id)
+    if chat_session is None:
+        raise ValueError("Chat session not found.")
+
+    project = session.get(Project, chat_session.project_id)
+    if project is None:
+        raise ValueError("Project not found.")
+
+    user_message = ChatMessage(chat_session_id=chat_session.id, role=MessageRole.USER, content=content.strip())
+    session.add(user_message)
+    session.flush()
+
+    follow_ups: list[str] = []
+    citations: list[dict] = []
+    if project.status != ProjectStatus.READY:
+        answer_text = "This project is not indexed yet. Wait for indexing to finish, then ask again."
+    else:
+        retrieved_chunks = retrieve_relevant_chunks(session, str(project.id), content)
+        if not retrieved_chunks:
+            answer_text = "I could not find relevant indexed code or docs for that question."
+        else:
+            answer = answer_question(content, retrieved_chunks)
+            answer_text = answer.answer
+            cited_ids = set(answer.citation_ids) if answer.citation_ids else {str(chunk.id) for chunk in retrieved_chunks[:3]}
+            citations = [citation_payload(chunk) for chunk in retrieved_chunks if str(chunk.id) in cited_ids]
+            if not citations:
+                citations = [citation_payload(chunk) for chunk in retrieved_chunks[:3]]
+            follow_ups = answer.suggested_follow_ups[:3]
+
+    assistant_message = ChatMessage(
+        chat_session_id=chat_session.id,
+        role=MessageRole.ASSISTANT,
+        content=answer_text,
+        citations=citations or None,
+    )
+    session.add(assistant_message)
+    if chat_session.title is None:
+        chat_session.title = content.strip()[:80]
+    session.commit()
+    session.refresh(chat_session)
+    session.refresh(user_message)
+    session.refresh(assistant_message)
+    return chat_session, user_message, assistant_message, follow_ups
+
