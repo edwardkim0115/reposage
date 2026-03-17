@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from math import sqrt
 import re
 from typing import Iterable
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from reposage.models import CodeChunk
 from reposage.services.llm import embed_texts
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -151,7 +154,8 @@ def retrieve_relevant_chunks(session: Session, project_id: str, query: str, *, l
     if session.bind and session.bind.dialect.name != "sqlite":
         try:
             vector_results = retrieve_vector_chunks(session, project_id, query, limit=limit * 3)
-        except RuntimeError:
+        except Exception as exc:
+            logger.warning("Vector retrieval failed; falling back to lexical-only search: %s", exc)
             vector_results = []
     merged = merge_ranked_results(lexical_results, vector_results, query=query, limit=limit)
     return [item.chunk for item in merged]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +10,8 @@ from reposage.enums import MessageRole, ProjectStatus
 from reposage.models import ChatMessage, ChatSession, Project
 from reposage.services.llm import answer_question, citation_payload
 from reposage.services.retrieval import retrieve_relevant_chunks
+
+logger = logging.getLogger(__name__)
 
 
 def create_chat_session(session: Session, project_id: str, title: str | None = None) -> ChatSession:
@@ -27,6 +30,20 @@ def list_messages(session: Session, chat_session_id: str) -> list[ChatMessage]:
         .order_by(ChatMessage.created_at.asc())
     )
     return list(session.scalars(statement).all())
+
+
+def build_grounded_fallback_answer(chunks: list[CodeChunk], *, limit: int = 3) -> str:
+    if not chunks:
+        return "I could not find relevant indexed code or docs for that question."
+
+    lines = ["I couldn't use the language model, but these indexed locations look most relevant:"]
+    for chunk in chunks[:limit]:
+        location = chunk.path
+        if chunk.start_line and chunk.end_line:
+            location = f"{location}:{chunk.start_line}-{chunk.end_line}"
+        label = chunk.symbol_name or chunk.chunk_type
+        lines.append(f"- {location} ({label})")
+    return "\n".join(lines)
 
 
 def post_chat_message(session: Session, chat_session_id: str, content: str) -> tuple[ChatSession, ChatMessage, ChatMessage, list[str]]:
@@ -55,13 +72,22 @@ def post_chat_message(session: Session, chat_session_id: str, content: str) -> t
         if not retrieved_chunks:
             answer_text = "I could not find relevant indexed code or docs for that question."
         else:
-            answer = answer_question(content, retrieved_chunks)
-            answer_text = answer.answer
-            cited_ids = set(answer.citation_ids) if answer.citation_ids else {str(chunk.id) for chunk in retrieved_chunks[:3]}
+            try:
+                answer = answer_question(content, retrieved_chunks)
+                answer_text = answer.answer
+                cited_ids = (
+                    set(answer.citation_ids)
+                    if answer.citation_ids
+                    else {str(chunk.id) for chunk in retrieved_chunks[:3]}
+                )
+                follow_ups = answer.suggested_follow_ups[:3]
+            except Exception as exc:
+                logger.warning("Answer generation failed; returning retrieval-only fallback: %s", exc)
+                answer_text = build_grounded_fallback_answer(retrieved_chunks)
+                cited_ids = {str(chunk.id) for chunk in retrieved_chunks[:3]}
             citations = [citation_payload(chunk) for chunk in retrieved_chunks if str(chunk.id) in cited_ids]
             if not citations:
                 citations = [citation_payload(chunk) for chunk in retrieved_chunks[:3]]
-            follow_ups = answer.suggested_follow_ups[:3]
 
     assistant_message = ChatMessage(
         chat_session_id=chat_session.id,

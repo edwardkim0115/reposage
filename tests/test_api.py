@@ -177,3 +177,54 @@ def test_chat_rejects_blank_message_content(client, db_session) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_chat_falls_back_when_answer_generation_fails(client, db_session, monkeypatch) -> None:
+    project = Project(name="Chat repo", source_type=SourceType.ZIP, status=ProjectStatus.READY)
+    db_session.add(project)
+    db_session.flush()
+    repo_file = RepositoryFile(
+        project_id=project.id,
+        path="src/api.py",
+        language="python",
+        file_size=120,
+        checksum="xyz",
+        is_supported=True,
+        content_text="def signup():\n    return create_user()",
+        summary="python file; contains function chunks",
+    )
+    db_session.add(repo_file)
+    db_session.flush()
+    chunk = CodeChunk(
+        project_id=project.id,
+        repository_file_id=repo_file.id,
+        path=repo_file.path,
+        language="python",
+        chunk_index=0,
+        chunk_type="function",
+        symbol_name="signup",
+        start_line=1,
+        end_line=2,
+        content="def signup():\n    return create_user()",
+        search_text="src/api.py signup def signup create_user",
+        chunk_metadata={},
+    )
+    chat_session = ChatSession(project_id=project.id, title="Fallback")
+    db_session.add_all([chunk, chat_session])
+    db_session.commit()
+
+    monkeypatch.setattr("reposage.services.chat.retrieve_relevant_chunks", lambda *args, **kwargs: [chunk])
+    monkeypatch.setattr(
+        "reposage.services.chat.answer_question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("missing key")),
+    )
+
+    response = client.post(
+        f"/chat/sessions/{chat_session.id}/messages",
+        json={"content": "How does signup work?"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert "most relevant" in payload["assistant_message"]["content"]
+    assert payload["assistant_message"]["citations"][0]["path"] == "src/api.py"
