@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from reposage.enums import ProjectStatus, SourceType
 from reposage.models import ChatSession, CodeChunk, Project, RepositoryFile
 from reposage.services.llm import GroundedAnswer
@@ -110,6 +112,7 @@ def test_chat_happy_path_returns_grounded_citations(client, db_session, monkeypa
     chat_session = ChatSession(project_id=project.id, title="Signup flow")
     db_session.add_all([chunk, chat_session])
     db_session.commit()
+    previous_updated_at = chat_session.updated_at
 
     monkeypatch.setattr("reposage.services.chat.retrieve_relevant_chunks", lambda *args, **kwargs: [chunk])
     monkeypatch.setattr(
@@ -130,6 +133,34 @@ def test_chat_happy_path_returns_grounded_citations(client, db_session, monkeypa
     payload = response.json()
     assert payload["assistant_message"]["citations"][0]["path"] == "src/api.py"
     assert payload["suggested_follow_ups"] == ["What calls signup?"]
+    db_session.refresh(chat_session)
+    assert chat_session.updated_at >= previous_updated_at
+
+
+def test_chat_updates_session_timestamp(client, db_session, monkeypatch) -> None:
+    project = Project(name="Chat repo", source_type=SourceType.ZIP, status=ProjectStatus.READY)
+    db_session.add(project)
+    db_session.flush()
+    created_at = datetime.utcnow() - timedelta(days=1)
+    chat_session = ChatSession(
+        project_id=project.id,
+        title="Old session",
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    db_session.add(chat_session)
+    db_session.commit()
+
+    monkeypatch.setattr("reposage.services.chat.retrieve_relevant_chunks", lambda *args, **kwargs: [])
+
+    response = client.post(
+        f"/chat/sessions/{chat_session.id}/messages",
+        json={"content": "Where is auth handled?"},
+    )
+
+    assert response.status_code == 201
+    db_session.refresh(chat_session)
+    assert chat_session.updated_at > created_at
 
 
 def test_chat_rejects_blank_message_content(client, db_session) -> None:

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from reposage.services.retrieval import RankedChunk, classify_query, merge_ranked_results
+from reposage.services.retrieval import (
+    RankedChunk,
+    classify_query,
+    extract_query_terms,
+    merge_ranked_results,
+    score_text_matches,
+)
 
 
 def _chunk(chunk_id: str, *, path: str, chunk_type: str, symbol_name: str | None = None):
@@ -18,6 +24,12 @@ def test_query_classification() -> None:
     assert classify_query("Where is authentication handled?") == "where"
     assert classify_query("How does signup work?") == "how"
     assert classify_query("What does AuthService do?") == "symbol"
+
+
+def test_query_terms_strip_stopwords_and_keep_identifiers() -> None:
+    assert extract_query_terms("Where is authentication handled?") == ["authentication"]
+    assert extract_query_terms("What does AuthService do?") == ["authservice"]
+    assert score_text_matches("src/auth/auth_service.py", ["auth", "service"]) == 1.0
 
 
 def test_merge_ranked_results_boosts_symbol_and_path_matches() -> None:
@@ -37,4 +49,3 @@ def test_merge_ranked_results_boosts_symbol_and_path_matches() -> None:
 
     assert merged[0].chunk.id == "1"
     assert merged[0].final_score >= merged[1].final_score
-

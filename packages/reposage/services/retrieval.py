@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import sqrt
+import re
 from typing import Iterable
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import case, desc, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from reposage.models import CodeChunk
@@ -19,6 +20,36 @@ class RankedChunk:
     path_score: float = 0.0
     symbol_score: float = 0.0
     final_score: float = 0.0
+
+
+QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "code",
+    "do",
+    "does",
+    "for",
+    "function",
+    "handle",
+    "handled",
+    "how",
+    "implementation",
+    "implemented",
+    "in",
+    "is",
+    "method",
+    "of",
+    "route",
+    "the",
+    "this",
+    "what",
+    "where",
+    "which",
+    "work",
+    "works",
+}
+QUERY_TERM_RE = re.compile(r"[A-Za-z0-9_./-]+")
 
 
 def classify_query(query: str) -> str:
@@ -36,6 +67,28 @@ def classify_query(query: str) -> str:
     ):
         return "symbol"
     return "general"
+
+
+def extract_query_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw_term in QUERY_TERM_RE.findall(query.lower()):
+        term = raw_term.strip("._-/")
+        if not term or term in QUERY_STOPWORDS or len(term) <= 1:
+            continue
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def score_text_matches(text: str | None, query_terms: list[str]) -> float:
+    if not text or not query_terms:
+        return 0.0
+    lowered = text.lower()
+    matches = sum(1 for term in query_terms if term in lowered)
+    return matches / len(query_terms)
 
 
 def merge_ranked_results(
@@ -108,25 +161,41 @@ def retrieve_lexical_chunks(session: Session, project_id: str, query: str, *, li
     if session.bind and session.bind.dialect.name == "sqlite":
         return _retrieve_lexical_chunks_sqlite(session, project_id, query, limit)
 
+    query_terms = extract_query_terms(query)
     ts_query = func.websearch_to_tsquery("english", query)
-    path_term = f"%{query.lower()}%"
-    symbol_term = f"%{query.lower()}%"
+
+    path_score = literal(0.0)
+    symbol_score = literal(0.0)
+    extra_predicates = []
+
+    if query_terms:
+        path_predicates = [func.lower(CodeChunk.path).like(f"%{term}%") for term in query_terms]
+        symbol_predicates = [
+            func.lower(func.coalesce(CodeChunk.symbol_name, "")).like(f"%{term}%") for term in query_terms
+        ]
+        extra_predicates.extend([or_(*path_predicates), or_(*symbol_predicates)])
+
+        path_score = sum(
+            (case((predicate, 1.0), else_=0.0) for predicate in path_predicates),
+            start=literal(0.0),
+        ) / float(len(query_terms))
+        symbol_score = sum(
+            (case((predicate, 1.0), else_=0.0) for predicate in symbol_predicates),
+            start=literal(0.0),
+        ) / float(len(query_terms))
 
     statement = (
         select(
             CodeChunk,
             func.ts_rank_cd(func.to_tsvector("english", CodeChunk.search_text), ts_query).label("lexical_score"),
-            func.similarity(func.lower(CodeChunk.path), query.lower()).label("path_score"),
-            func.similarity(func.lower(func.coalesce(CodeChunk.symbol_name, "")), query.lower()).label(
-                "symbol_score"
-            ),
+            path_score.label("path_score"),
+            symbol_score.label("symbol_score"),
         )
         .where(
             CodeChunk.project_id == project_id,
             or_(
                 func.to_tsvector("english", CodeChunk.search_text).op("@@")(ts_query),
-                func.lower(CodeChunk.path).like(path_term),
-                func.lower(func.coalesce(CodeChunk.symbol_name, "")).like(symbol_term),
+                *extra_predicates,
             ),
         )
         .order_by(desc("lexical_score"), desc("symbol_score"), desc("path_score"))
@@ -146,16 +215,17 @@ def retrieve_lexical_chunks(session: Session, project_id: str, query: str, *, li
 
 
 def _retrieve_lexical_chunks_sqlite(session: Session, project_id: str, query: str, limit: int) -> list[RankedChunk]:
-    query_terms = [term for term in query.lower().split() if term]
+    query_terms = extract_query_terms(query)
+    lexical_terms = query_terms or [term for term in query.lower().split() if term]
     chunks = session.scalars(select(CodeChunk).where(CodeChunk.project_id == project_id)).all()
     results: list[RankedChunk] = []
     for chunk in chunks:
         haystack = f"{chunk.path} {chunk.symbol_name or ''} {chunk.search_text}".lower()
-        lexical_score = sum(haystack.count(term) for term in query_terms)
+        lexical_score = sum(haystack.count(term) for term in lexical_terms)
         if lexical_score == 0:
             continue
-        path_score = 1.0 if query.lower() in chunk.path.lower() else 0.0
-        symbol_score = 1.0 if chunk.symbol_name and query.lower() in chunk.symbol_name.lower() else 0.0
+        path_score = score_text_matches(chunk.path, query_terms)
+        symbol_score = score_text_matches(chunk.symbol_name, query_terms)
         results.append(
             RankedChunk(
                 chunk=chunk,

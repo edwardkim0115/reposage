@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -68,6 +70,7 @@ def post_chat_message(session: Session, chat_session_id: str, content: str) -> t
         citations=citations or None,
     )
     session.add(assistant_message)
+    chat_session.updated_at = datetime.utcnow()
     if chat_session.title is None:
         chat_session.title = content.strip()[:80]
     session.commit()
