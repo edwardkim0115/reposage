@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, FileCode2, RefreshCw, SendHorizonal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [question, setQuestion] = useState("");
   const [highlightedCitation, setHighlightedCitation] = useState<Citation | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [suggestedFollowUps, setSuggestedFollowUps] = useState<string[]>([]);
+  const previousProjectStatus = useRef<string | null>(null);
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -37,7 +39,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const jobsQuery = useQuery({
     queryKey: ["jobs", projectId],
     queryFn: () => api.listJobs(projectId),
-    refetchInterval: projectQuery.data?.status === "ready" ? false : 4000
+    refetchInterval:
+      projectQuery.data?.status === "queued" || projectQuery.data?.status === "indexing"
+        ? 4000
+        : false
   });
 
   const sessionsQuery = useQuery({
@@ -70,22 +75,36 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
       await queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
+      await queryClient.invalidateQueries({ queryKey: ["files", projectId] });
+      if (selectedFileId) {
+        await queryClient.invalidateQueries({ queryKey: ["file", projectId, selectedFileId] });
+      }
     }
   });
 
   const sendMessageMutation = useMutation({
     mutationFn: () => api.postMessage(activeSessionId as string, question),
-    onSuccess: async () => {
-      setQuestion("");
+    onMutate: () => {
       setChatError(null);
+      setSuggestedFollowUps([]);
+    },
+    onSuccess: async (reply) => {
+      setQuestion("");
+      setSuggestedFollowUps(reply.suggested_follow_ups);
       await queryClient.invalidateQueries({ queryKey: ["messages", activeSessionId] });
     },
     onError: (error: Error) => setChatError(error.message)
   });
 
   useEffect(() => {
-    if (!filesQuery.data?.length || selectedFileId) return;
-    setSelectedFileId(filesQuery.data[0].id);
+    if (!filesQuery.data?.length) return;
+    if (!selectedFileId) {
+      setSelectedFileId(filesQuery.data[0].id);
+      return;
+    }
+    if (!filesQuery.data.some((file) => file.id === selectedFileId)) {
+      setSelectedFileId(filesQuery.data[0].id);
+    }
   }, [filesQuery.data, selectedFileId]);
 
   useEffect(() => {
@@ -100,12 +119,32 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   }, [activeSessionId, createSessionMutation, sessionsQuery.data]);
 
   useEffect(() => {
+    setSuggestedFollowUps([]);
+  }, [activeSessionId]);
+
+  useEffect(() => {
     if (!highlightedCitation || fileDetailQuery.data?.id !== highlightedCitation.file_id) return;
     const targetLine = highlightedCitation.start_line ?? highlightedCitation.end_line;
     if (!targetLine) return;
     const element = document.querySelector(`[data-line="${targetLine}"]`);
     element?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [fileDetailQuery.data, highlightedCitation]);
+
+  useEffect(() => {
+    const currentStatus = projectQuery.data?.status ?? null;
+    if (
+      currentStatus === "ready" &&
+      previousProjectStatus.current &&
+      previousProjectStatus.current !== "ready"
+    ) {
+      void queryClient.invalidateQueries({ queryKey: ["files", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
+      if (selectedFileId) {
+        void queryClient.invalidateQueries({ queryKey: ["file", projectId, selectedFileId] });
+      }
+    }
+    previousProjectStatus.current = currentStatus;
+  }, [projectId, projectQuery.data?.status, queryClient, selectedFileId]);
 
   const selectedRange = highlightedCitation
     ? {
@@ -311,6 +350,21 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             {chatError ? (
               <div className="mt-4 rounded-2xl border border-rose/30 bg-rose/10 px-4 py-3 text-sm text-rose">
                 {chatError}
+              </div>
+            ) : null}
+
+            {suggestedFollowUps.length ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {suggestedFollowUps.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    onClick={() => setQuestion(suggestion)}
+                    className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-mist/78 transition hover:border-accent hover:text-mist"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
               </div>
             ) : null}
 
