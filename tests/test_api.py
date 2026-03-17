@@ -15,6 +15,11 @@ def test_create_project_and_list_projects(client) -> None:
     assert len(list_response.json()) == 1
 
 
+def test_create_project_rejects_blank_name(client) -> None:
+    response = client.post("/projects", json={"name": "   "})
+    assert response.status_code == 422
+
+
 def test_create_github_project_enqueues_job(client, monkeypatch) -> None:
     enqueued: list[str] = []
     monkeypatch.setattr("apps.api.app.routers.projects.enqueue_index_job", lambda job_id: enqueued.append(job_id))
@@ -126,3 +131,18 @@ def test_chat_happy_path_returns_grounded_citations(client, db_session, monkeypa
     assert payload["assistant_message"]["citations"][0]["path"] == "src/api.py"
     assert payload["suggested_follow_ups"] == ["What calls signup?"]
 
+
+def test_chat_rejects_blank_message_content(client, db_session) -> None:
+    project = Project(name="Chat repo", source_type=SourceType.ZIP, status=ProjectStatus.READY)
+    db_session.add(project)
+    db_session.flush()
+    chat_session = ChatSession(project_id=project.id, title="Empty")
+    db_session.add(chat_session)
+    db_session.commit()
+
+    response = client.post(
+        f"/chat/sessions/{chat_session.id}/messages",
+        json={"content": "   "},
+    )
+
+    assert response.status_code == 422

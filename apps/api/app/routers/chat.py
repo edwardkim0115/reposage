@@ -48,7 +48,13 @@ def create_message_endpoint(
             db, chat_session_id, payload.content
         )
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        message = str(exc)
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if message in {"Chat session not found.", "Project not found."}
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=message) from exc
     return ChatReply(
         session=ChatSessionRead.model_validate(session_obj),
         user_message=ChatMessageRead.model_validate(user_message),

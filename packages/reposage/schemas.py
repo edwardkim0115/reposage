@@ -4,16 +4,32 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Project name cannot be blank.")
+        return value
+
 
 class GithubProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     source_url: HttpUrl
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Project name cannot be blank.")
+        return value
 
 
 class CitationRead(BaseModel):
@@ -87,6 +103,14 @@ class RepositoryFileDetail(RepositoryFileRead):
 class ChatSessionCreate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
 
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
 
 class ChatSessionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -100,6 +124,14 @@ class ChatSessionRead(BaseModel):
 
 class ChatMessageCreate(BaseModel):
     content: str = Field(min_length=1)
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Message content cannot be blank.")
+        return value
 
 
 class ChatMessageRead(BaseModel):
@@ -138,4 +170,3 @@ class HealthRead(BaseModel):
 
 
 ProjectDetail.model_rebuild()
-

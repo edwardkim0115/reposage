@@ -13,6 +13,13 @@ from reposage.repository.github import validate_github_url
 from reposage.schemas import IndexJobRead, ProjectDetail, ProjectRead
 
 
+def normalize_project_name(name: str) -> str:
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("Project name cannot be blank.")
+    return normalized
+
+
 def list_projects(session: Session) -> list[Project]:
     statement = select(Project).order_by(Project.updated_at.desc())
     return list(session.scalars(statement).all())
@@ -40,7 +47,7 @@ def get_project_detail(session: Session, project_id: str) -> ProjectDetail | Non
 
 
 def create_project(session: Session, name: str) -> Project:
-    project = Project(name=name.strip(), source_type=None, status=ProjectStatus.CREATED)
+    project = Project(name=normalize_project_name(name), source_type=None, status=ProjectStatus.CREATED)
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -50,7 +57,7 @@ def create_project(session: Session, name: str) -> Project:
 def create_github_project(session: Session, *, name: str, source_url: str) -> tuple[Project, IndexJob]:
     validate_github_url(source_url)
     project = Project(
-        name=name.strip(),
+        name=normalize_project_name(name),
         source_type=SourceType.GITHUB,
         source_url=str(source_url),
         status=ProjectStatus.QUEUED,
@@ -70,7 +77,11 @@ def create_zip_project(session: Session, *, name: str, filename: str, payload: b
         raise ValueError("Only ZIP uploads are supported.")
 
     settings = get_settings()
-    project = Project(name=name.strip(), source_type=SourceType.ZIP, status=ProjectStatus.QUEUED)
+    project = Project(
+        name=normalize_project_name(name),
+        source_type=SourceType.ZIP,
+        status=ProjectStatus.QUEUED,
+    )
     session.add(project)
     session.flush()
 
@@ -135,4 +146,3 @@ def get_job(session: Session, job_id: str) -> IndexJob | None:
 def list_chat_sessions(session: Session, project_id: str) -> list[ChatSession]:
     statement = select(ChatSession).where(ChatSession.project_id == project_id).order_by(ChatSession.updated_at.desc())
     return list(session.scalars(statement).all())
-

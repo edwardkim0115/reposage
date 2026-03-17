@@ -10,7 +10,8 @@ from reposage.services.retrieval import retrieve_relevant_chunks
 
 
 def create_chat_session(session: Session, project_id: str, title: str | None = None) -> ChatSession:
-    chat_session = ChatSession(project_id=project_id, title=title)
+    normalized_title = title.strip() if title else None
+    chat_session = ChatSession(project_id=project_id, title=normalized_title or None)
     session.add(chat_session)
     session.commit()
     session.refresh(chat_session)
@@ -35,7 +36,11 @@ def post_chat_message(session: Session, chat_session_id: str, content: str) -> t
     if project is None:
         raise ValueError("Project not found.")
 
-    user_message = ChatMessage(chat_session_id=chat_session.id, role=MessageRole.USER, content=content.strip())
+    content = content.strip()
+    if not content:
+        raise ValueError("Message content cannot be blank.")
+
+    user_message = ChatMessage(chat_session_id=chat_session.id, role=MessageRole.USER, content=content)
     session.add(user_message)
     session.flush()
 
@@ -70,4 +75,3 @@ def post_chat_message(session: Session, chat_session_id: str, content: str) -> t
     session.refresh(user_message)
     session.refresh(assistant_message)
     return chat_session, user_message, assistant_message, follow_ups
-
